@@ -1,0 +1,36 @@
+id: pingmapper-ingest
+name: PINGMapper -> Lakehouse ingest
+version: 1
+trigger:
+  kind: event              # a new sonar recording lands in object storage
+  config: { source: aws-s3, subject: "sonar/uploads" }
+entry: process
+nodes:
+  - id: process
+    name: Run PINGMapper
+    kind: action           # call the PINGMapper processing service (heavy Python/GDAL/ML)
+    connector: http
+    action: request
+    layout: { x: 0, y: 0 }
+    inputs:
+      method: POST
+      url: "http://pingmapper-runner/process"
+      body: { recordingKey: "{{ trigger.data.key }}" }
+  - id: store
+    name: Store imagery in Lakehouse
+    kind: action
+    connector: lakehouse
+    action: ingestDocument
+    layout: { x: 0, y: 150 }
+    inputs:
+      batch_id: "{{ trigger.data.key }}"
+      kind: tiff
+      data: "{{ steps.process.output.geotiffBase64 }}"
+  - id: done
+    name: Done
+    kind: terminate
+    layout: { x: 0, y: 300 }
+    config: { status: succeeded }
+edges:
+  - { from: process, to: store }
+  - { from: store, to: done }
