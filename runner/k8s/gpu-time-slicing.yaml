@@ -1,0 +1,22 @@
+# GPU time-slicing so a bursty workload (the PINGMapper demo runner) can SHARE a
+# physical GPU with the always-on llama + vl-embed pods instead of needing a
+# whole card. replicas: 2 advertises each physical GPU as 2 schedulable slots
+# (2 GPUs -> 4 slots). No memory isolation between slots — cooperative sharing —
+# which is fine here: each card has ~9.8 GiB free and PINGMapper's segformer
+# needs only a few GiB. Fully reversible: drop the ClusterPolicy config ref to
+# return to exclusive 1-pod-per-GPU.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: time-slicing-config
+  namespace: gpu-operator-resources
+data:
+  any: |-
+    version: v1
+    flags:
+      migStrategy: none
+    sharing:
+      timeSlicing:
+        resources:
+        - name: nvidia.com/gpu
+          replicas: 2

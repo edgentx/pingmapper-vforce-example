@@ -1,0 +1,37 @@
+FROM pingmapper-runner:latest
+USER root
+# System X11/Tk runtime libs so matplotlib/tkinter import does not hard-fail
+# (doodleverse_utils.prediction_imports pulls in tkinter via matplotlib).
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      libx11-6 libxext6 libxrender1 libsm6 \
+ && rm -rf /var/lib/apt/lists/*
+# Segmentation ML deps — GPU TensorFlow. tensorflow[and-cuda] bundles the
+# matched CUDA 12.x + cuDNN 9 pip wheels, so the container carries its own CUDA
+# userspace and only needs the host NVIDIA driver (via the k8s device plugin) —
+# no host CUDA toolkit dependency. The node driver (CUDA 13.2) is forward-
+# compatible with the bundled 12.x runtime. segformer substrate models need
+# transformers; tf-keras keeps Keras 2 semantics doodleverse expects.
+RUN /opt/conda/bin/pip install --no-cache-dir \
+      "tensorflow[and-cuda]>=2.20,<3" \
+      "tf-keras>=2.20,<3" \
+      "transformers>=4.57,<5" \
+      "doodleverse_utils>=0.0.39"
+# Put the pip-bundled CUDA .so dirs on the dynamic-loader path so TensorFlow can
+# dlopen libcudnn/libcublas/etc. Without this, tensorflow[and-cuda] installs the
+# nvidia-*-cu12 wheels but TF logs "Cannot dlopen some GPU libraries" and falls
+# back to CPU (GPUs: []). ldconfig at build time bakes the paths into
+# /etc/ld.so.cache — cleaner and more durable than a runtime LD_LIBRARY_PATH.
+RUN find /opt/conda/lib/python3.11/site-packages/nvidia -maxdepth 2 -name lib -type d \
+      > /etc/ld.so.conf.d/nvidia-pip-cuda.conf \
+ && ldconfig
+# Durable runtime shims (Agg backend + matplotlib.cm.get_cmap restore).
+COPY sitecustomize.py /opt/conda/lib/python3.11/site-packages/sitecustomize.py
+ENV MPLBACKEND=Agg
+# Belt-and-braces: also export the paths so a non-cache dlopen still resolves.
+ENV LD_LIBRARY_PATH=/opt/conda/lib/python3.11/site-packages/nvidia/cublas/lib:/opt/conda/lib/python3.11/site-packages/nvidia/cuda_cupti/lib:/opt/conda/lib/python3.11/site-packages/nvidia/cuda_nvrtc/lib:/opt/conda/lib/python3.11/site-packages/nvidia/cuda_runtime/lib:/opt/conda/lib/python3.11/site-packages/nvidia/cudnn/lib:/opt/conda/lib/python3.11/site-packages/nvidia/cufft/lib:/opt/conda/lib/python3.11/site-packages/nvidia/curand/lib:/opt/conda/lib/python3.11/site-packages/nvidia/cusolver/lib:/opt/conda/lib/python3.11/site-packages/nvidia/cusparse/lib:/opt/conda/lib/python3.11/site-packages/nvidia/nccl/lib:/opt/conda/lib/python3.11/site-packages/nvidia/nvjitlink/lib
+# Verify the whole segmentation import chain at build time. (TF logs a missing-
+# GPU note during the build since no device is attached to the builder — that is
+# expected; the import must still succeed.)
+RUN /opt/conda/bin/python -c "import doodleverse_utils.prediction_imports as p; import tensorflow as tf; import transformers; import matplotlib.cm as cm; assert hasattr(cm, \"get_cmap\"), \"get_cmap shim missing\"; print(\"OK TF\", tf.__version__, \"transformers\", transformers.__version__, \"get_cmap restored\")"
+USER mambauser

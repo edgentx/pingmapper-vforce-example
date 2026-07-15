@@ -1,0 +1,83 @@
+# Green (GPU) PINGMapper runner — stood up ALONGSIDE the CPU runner for a
+# blue-green cutover. Identical to the blue deployment except: the tf-gpu image,
+# a GPU resource request, and its own labels/service (NodePort 30821) so it can
+# be verified in isolation before the stable :30820 service selector is flipped.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pingmapper-runner-gpu
+  namespace: pixelrag
+  labels:
+    app: pingmapper-runner-gpu
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pingmapper-runner-gpu
+  template:
+    metadata:
+      labels:
+        app: pingmapper-runner-gpu
+    spec:
+      containers:
+      - image: pingmapper-runner:tf-gpu
+        imagePullPolicy: Never
+        name: runner
+        ports:
+        - containerPort: 8000
+          protocol: TCP
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          # GPU TF loads CUDA libs on first import — give the process longer to
+          # become ready than the CPU pod needs.
+          initialDelaySeconds: 20
+          periodSeconds: 10
+          failureThreshold: 30
+        resources:
+          limits:
+            nvidia.com/gpu: 1
+        volumeMounts:
+        - mountPath: /app/server.py
+          name: server-code
+          subPath: server.py
+        - mountPath: /home/mambauser/.pingmapper
+          name: model-cache
+        - mountPath: /data
+          name: data
+        - mountPath: /data/input
+          name: input
+      volumes:
+      - configMap:
+          defaultMode: 420
+          name: pingmapper-server
+        name: server-code
+      - hostPath:
+          path: /home/vforce/pingmapper-cache
+          type: DirectoryOrCreate
+        name: model-cache
+      - emptyDir:
+          sizeLimit: 4Gi
+        name: data
+      - hostPath:
+          path: /home/vforce/pingmapper-input
+          type: DirectoryOrCreate
+        name: input
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pingmapper-runner-gpu
+  namespace: pixelrag
+  labels:
+    app: pingmapper-runner-gpu
+spec:
+  type: NodePort
+  selector:
+    app: pingmapper-runner-gpu
+  ports:
+  - port: 80
+    targetPort: 8000
+    nodePort: 30821
+    protocol: TCP
